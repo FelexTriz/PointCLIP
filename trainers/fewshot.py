@@ -15,12 +15,17 @@ from trainers.mv_utils_fs import PCViews
 
 
 CUSTOM_TEMPLATES = {
-    'ModelNet40': 'point cloud of a big {}.'
+    'ModelNet40': 'point cloud of a big {}.',
+    'modelnet40_ply_hdf5_2048': 'point cloud of a big {}.'
 }
 
 # source: https://github.com/WangYueFt/dgcnn/blob/master/pytorch/util.py
-def smooth_loss(pred, gold):
-    eps = 0.2
+def dynamic_eps(epoch,max_epochs):
+    eps = 0.4 * (1 - epoch / max_epochs) + 0.01  * (epoch / max_epochs)
+    return eps
+def smooth_loss(pred, gold,epoch,max_epochs):
+    eps = dynamic_eps(epoch,max_epochs)
+
     n_class = pred.size(1)
 
     one_hot = torch.zeros_like(pred).scatter(1, gold.view(-1, 1), 1)
@@ -237,7 +242,7 @@ class PointCLIP_FS(TrainerX):
     def forward_backward(self, batch):
         image, label = self.parse_batch_train(batch)
         output = self.model(image)
-        loss = smooth_loss(output, label)
+        loss = smooth_loss(output, label,self.epoch,self.max_epoch)
         self.model_backward_and_update(loss)
 
         loss_summary = {

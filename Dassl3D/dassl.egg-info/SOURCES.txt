@@ -1,7 +1,3 @@
-.flake8
-.gitignore
-.isort.cfg
-.style.yapf
 DATASETS.md
 LICENSE
 README.md
