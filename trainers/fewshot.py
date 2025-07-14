@@ -142,7 +142,7 @@ class CoOp_TextEncoder(nn.Module):
         prompts = torch.cat([prefix, ctx, suffix], dim=1)
 
         # 编码文本特征
-        text_features = self.clip_model.encode_text(prompts, self.tokenized_prompts)
+        text_features = self.clip_model.encode_text(prompts)
         text_features = text_features.repeat(1, self.cfg.MODEL.PROJECT.NUM_VIEWS)
 
         return text_features
