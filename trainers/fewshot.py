@@ -316,13 +316,14 @@ class PointCLIP_FS(TrainerX):
             for name, param in self.model.named_parameters():
                 if 'adapter' not in name and 'textual_encoder.ctx' not in name:
                     param.requires_grad_(False)
+            params_to_optimize = [
+                {'params': list(self.model.adapter.parameters()), 'lr': cfg.OPTIM.LR},
+                {'params': list(self.model.textual_encoder.parameters()), 'lr': cfg.OPTIM.LR * 0.1}  # 文本参数用更小学习率
+            ]
+            self.optim = build_optimizer(params_to_optimize, cfg.OPTIM)
 
             # 同时优化adapter和context
-            params_to_optimize = []
-            params_to_optimize.extend(list(self.model.adapter.parameters()))
-            params_to_optimize.extend(list(self.model.textual_encoder.parameters()))
 
-            self.optim = build_optimizer(params_to_optimize, cfg.OPTIM)
             self.sched = build_lr_scheduler(self.optim, cfg.OPTIM)
             self.register_model('pointclip_coop', self.model, self.optim, self.sched)
         else:

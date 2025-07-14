@@ -28,6 +28,8 @@ MODEL:
     NUM_VIEWS: 10
   ADAPTER:
     RATIO: 0.6
+    INIT: 1.0      # 添加这个
+    DROPOUT: 0.1   # 添加这个
 
 SEARCH:
   TIME: 4
