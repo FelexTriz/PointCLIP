@@ -75,7 +75,79 @@ def load_clip_to_cpu(cfg):
 
     return model
 
-       
+
+# 添加CoOp TextEncoder
+class CoOp_TextEncoder(nn.Module):
+    def __init__(self, cfg, classnames, clip_model):
+        super().__init__()
+        self.cfg = cfg
+        self.classnames = classnames
+        self.clip_model = clip_model
+        self.dtype = clip_model.dtype
+
+        # CoOp相关参数
+        self.n_cls = len(classnames)
+        self.n_ctx = 16  # 可学习的context长度
+        self.ctx_init = ""  # context初始化方式
+
+        # 获取token embedding维度
+        ctx_dim = clip_model.ln_final.weight.shape[0]
+
+        if self.ctx_init:
+            # 使用特定文本初始化context
+            ctx_init = self.ctx_init.replace("_", " ")
+            n_ctx = len(ctx_init.split(" "))
+            prompt = clip.tokenize(ctx_init)
+            with torch.no_grad():
+                embedding = clip_model.token_embedding(prompt).type(self.dtype)
+            ctx_vectors = embedding[0, 1: 1 + n_ctx, :]
+            prompt_prefix = ctx_init
+        else:
+            # 随机初始化
+            ctx_vectors = torch.empty(self.n_ctx, ctx_dim, dtype=self.dtype)
+            nn.init.normal_(ctx_vectors, std=0.02)
+            prompt_prefix = " ".join(["X"] * self.n_ctx)
+
+        print(f'Initial context: "{prompt_prefix}"')
+        print(f"Number of context words (tokens): {self.n_ctx}")
+
+        # 可学习的context vectors
+        self.ctx = nn.Parameter(ctx_vectors)
+
+        # 预处理类名
+        classnames = [name.replace("_", " ") for name in classnames]
+        name_lens = [len(clip.tokenize(name)[0]) - 2 for name in classnames]  # 减去SOS和EOS
+        prompts = [prompt_prefix + " " + name + "." for name in classnames]
+
+        tokenized_prompts = torch.cat([clip.tokenize(p) for p in prompts])
+        with torch.no_grad():
+            embedding = clip_model.token_embedding(tokenized_prompts).type(self.dtype)
+
+        # 注册为buffer，不参与梯度计算
+        self.register_buffer("token_prefix", embedding[:, :1, :])  # SOS
+        self.register_buffer("token_suffix", embedding[:, 1 + self.n_ctx:, :])  # CLS, EOS
+
+        self.tokenized_prompts = tokenized_prompts
+        self.name_lens = name_lens
+        self.class_token_position = "end"
+
+    def forward(self):
+        ctx = self.ctx
+        if ctx.dim() == 2:
+            ctx = ctx.unsqueeze(0).expand(self.n_cls, -1, -1)
+
+        prefix = self.token_prefix
+        suffix = self.token_suffix
+
+        prompts = torch.cat([prefix, ctx, suffix], dim=1)
+
+        # 编码文本特征
+        text_features = self.clip_model.encode_text(prompts, self.tokenized_prompts)
+        text_features = text_features.repeat(1, self.cfg.MODEL.PROJECT.NUM_VIEWS)
+
+        return text_features
+
+
 class Textual_Encoder(nn.Module):
 
     def __init__(self, cfg, classnames, clip_model):
@@ -96,13 +168,20 @@ class Textual_Encoder(nn.Module):
 
 class PointCLIP_Model(nn.Module):
 
-    def __init__(self, cfg, classnames, clip_model):
+    def __init__(self, cfg, classnames, clip_model, use_coop=False):
         super().__init__()
         
         # Encoders from CLIP
         self.visual_encoder = clip_model.visual
-        self.textual_encoder = Textual_Encoder(cfg, classnames, clip_model)
-        
+        # 根据参数选择使用哪种TextEncoder
+        self.use_coop = use_coop
+        if self.use_coop:
+            self.textual_encoder = CoOp_TextEncoder(cfg, classnames, clip_model)
+            print("Using CoOp TextEncoder")
+        else:
+            self.textual_encoder = Textual_Encoder(cfg, classnames, clip_model)
+            print("Using Original TextEncoder")
+
         self.logit_scale = clip_model.logit_scale
         self.dtype = clip_model.dtype
 
@@ -207,7 +286,7 @@ class PointCLIP_FS(TrainerX):
     """
         PointCLIP: Point Cloud Understanding by CLIP
         https://arxiv.org/pdf/2112.02413.pdf
-    """ 
+    """
 
     def build_model(self):
         cfg = self.cfg
@@ -216,33 +295,53 @@ class PointCLIP_FS(TrainerX):
         print(f'Loading CLIP (backbone: {cfg.MODEL.BACKBONE.NAME})')
         clip_model = load_clip_to_cpu(cfg)
 
-        print('Building PointCLIP')
-        self.model = PointCLIP_Model(cfg, classnames, clip_model)
+        # 从配置中获取use_coop参数
+        use_coop = getattr(cfg, 'USE_COOP', False)
 
-        print('Turning off gradients in both visual and textual encoders')
-        for name, param in self.model.named_parameters():
-            if 'adapter' not in name:
-                param.requires_grad_(False)
+        print('Building PointCLIP with CoOp' if use_coop else 'Building PointCLIP')
+        self.model = PointCLIP_Model(cfg, classnames, clip_model, use_coop)
+
+        # 根据是否启用CoOp来决定哪些参数需要梯度
+        if use_coop:
+            print('Turning off gradients in visual encoder')
+            for name, param in self.model.named_parameters():
+                if 'adapter' not in name and 'textual_encoder.ctx' not in name:
+                    param.requires_grad_(False)
+
+            # 同时优化adapter和context
+            params_to_optimize = []
+            params_to_optimize.extend(list(self.model.adapter.parameters()))
+            params_to_optimize.extend(list(self.model.textual_encoder.parameters()))
+
+            self.optim = build_optimizer(params_to_optimize, cfg.OPTIM)
+            self.sched = build_lr_scheduler(self.optim, cfg.OPTIM)
+            self.register_model('pointclip_coop', self.model, self.optim, self.sched)
+        else:
+            print('Turning off gradients in both visual and textual encoders')
+            for name, param in self.model.named_parameters():
+                if 'adapter' not in name:
+                    param.requires_grad_(False)
+
+            # 只优化adapter
+            self.optim = build_optimizer(self.model.adapter, cfg.OPTIM)
+            self.sched = build_lr_scheduler(self.optim, cfg.OPTIM)
+            self.register_model('adapter', self.model.adapter, self.optim, self.sched)
 
         if cfg.MODEL.INIT_WEIGHTS:
             load_pretrained_weights(self.model.adapter, cfg.MODEL.INIT_WEIGHTS)
 
-        
         self.model.to(self.device)
-        self.optim = build_optimizer(self.model.adapter, cfg.OPTIM)
-        self.sched = build_lr_scheduler(self.optim, cfg.OPTIM)
-
-        self.register_model('adapter', self.model.adapter, self.optim, self.sched)
 
         device_count = torch.cuda.device_count()
         if device_count > 1:
             print(f'Multiple GPUs detected (n_gpus={device_count}), use all of them!')
             self.model = nn.DataParallel(self.model)
 
+    # 其他方法保持不变...
     def forward_backward(self, batch):
         image, label = self.parse_batch_train(batch)
         output = self.model(image)
-        loss = smooth_loss(output, label,self.epoch,self.max_epoch)
+        loss = smooth_loss(output, label, self.epoch, self.max_epoch)
         self.model_backward_and_update(loss)
 
         loss_summary = {
@@ -261,7 +360,7 @@ class PointCLIP_FS(TrainerX):
         input = input.to(self.device)
         label = label.to(self.device)
         return input, label
-    
+
     def load_model(self, directory, epoch=None):
         if not directory:
             print(

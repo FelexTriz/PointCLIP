@@ -13,6 +13,9 @@ CFG=rn101
 # Shot number
 NUM_SHOTS=16
 
+# CoOp开关: true表示启用，false表示禁用
+USE_COOP=true
+
 export CUDA_VISIBLE_DEVICES=0
 python train.py \
 --root ${DATA} \
@@ -21,4 +24,5 @@ python train.py \
 --dataset-config-file configs/datasets/${DATASET}.yaml \
 --config-file configs/trainers/${TRAINER}/${CFG}.yaml \
 --output-dir output/${TRAINER}/${CFG}/${DATASET} \
+--use-coop ${USE_COOP} \
 # --post-search

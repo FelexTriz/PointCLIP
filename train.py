@@ -48,6 +48,13 @@ def reset_cfg(cfg, args):
     if args.num_shots:
         cfg.DATASET.NUM_SHOTS = args.num_shots
 
+# 添加这部分处理USE_COOP参数
+    if hasattr(args, 'use_coop'):
+        if args.use_coop.lower() == 'true':
+            cfg.USE_COOP = True
+        else:
+            cfg.USE_COOP = False
+
 
 def extend_cfg(cfg):
     """
@@ -127,6 +134,9 @@ if __name__ == '__main__':
     parser.add_argument(
         '--output-dir', type=str, default='', help='output directory'
     )
+    # 在train.py中添加参数解析
+    parser.add_argument('--use-coop', type=str, default='false', help='Enable CoOp TextEncoder')
+
     parser.add_argument(
         '--resume',
         type=str,
