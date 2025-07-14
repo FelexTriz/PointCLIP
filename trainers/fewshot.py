@@ -116,7 +116,6 @@ class CoOp_TextEncoder(nn.Module):
 
         # 预处理类名
         classnames = [name.replace("_", " ") for name in classnames]
-        name_lens = [len(clip.tokenize(name)[0]) - 2 for name in classnames]  # 减去SOS和EOS
         prompts = [prompt_prefix + " " + name + "." for name in classnames]
 
         tokenized_prompts = torch.cat([clip.tokenize(p) for p in prompts])
@@ -126,9 +125,8 @@ class CoOp_TextEncoder(nn.Module):
         # 注册为buffer，不参与梯度计算
         self.register_buffer("token_prefix", embedding[:, :1, :])  # SOS
         self.register_buffer("token_suffix", embedding[:, 1 + self.n_ctx:, :])  # CLS, EOS
+        self.register_buffer("tokenized_prompts", tokenized_prompts)
 
-        self.tokenized_prompts = tokenized_prompts
-        self.name_lens = name_lens
         self.class_token_position = "end"
 
     def forward(self):
@@ -141,12 +139,23 @@ class CoOp_TextEncoder(nn.Module):
 
         prompts = torch.cat([prefix, ctx, suffix], dim=1)
 
-        # 编码文本特征
-        text_features = self.clip_model.encode_text(prompts)
+        # 手动实现CLIP文本编码，因为我们有自定义的embedding
+        x = prompts.type(self.dtype)
+
+        # 添加位置编码
+        x = x + self.clip_model.positional_embedding.type(self.dtype)
+        x = x.permute(1, 0, 2)  # NLD -> LND
+        x = self.clip_model.transformer(x)
+        x = x.permute(1, 0, 2)  # LND -> NLD
+        x = self.clip_model.ln_final(x).type(self.dtype)
+
+        # 取[EOS] token的特征
+        text_features = x[torch.arange(x.shape[0]), self.tokenized_prompts.argmax(
+            dim=-1)] @ self.clip_model.text_projection
+
         text_features = text_features.repeat(1, self.cfg.MODEL.PROJECT.NUM_VIEWS)
 
         return text_features
-
 
 class Textual_Encoder(nn.Module):
 
