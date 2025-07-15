@@ -1,18 +1,14 @@
 import os.path as osp
-
 import torch
 import torch.nn as nn
-from torch.nn import functional as F
-
 from dassl.engine import TRAINER_REGISTRY, TrainerX
 from dassl.metrics import compute_accuracy
-from dassl.utils import load_pretrained_weights, load_checkpoint
 from dassl.optim import build_optimizer, build_lr_scheduler
+from dassl.utils import load_pretrained_weights, load_checkpoint
+from torch.nn import functional as F
 
 from clip import clip
 from trainers.mv_utils_fs import PCViews
-
-
 
 CUSTOM_TEMPLATES = {
     'ModelNet40': 'point cloud of a big {}.',
@@ -142,16 +138,27 @@ class CoOp_TextEncoder(nn.Module):
         # 手动实现CLIP文本编码，因为我们有自定义的embedding
         x = prompts.type(self.dtype)
 
-        # 添加位置编码
-        x = x + self.clip_model.positional_embedding.type(self.dtype)
+        seq_len = x.shape[1]  # 获取实际序列长度 (75)
+        if seq_len <= self.clip_model.positional_embedding.shape[0]:
+            # 如果序列长度小于等于位置编码长度，截取位置编码
+            pos_emb = self.clip_model.positional_embedding[:seq_len].type(self.dtype)
+        else:
+            # 如果序列长度大于位置编码长度，填充位置编码（通常不会发生）
+            pos_emb = self.clip_model.positional_embedding.type(self.dtype)
+            # 可以重复最后一个位置编码或使用其他策略
+
+        x = x + pos_emb
         x = x.permute(1, 0, 2)  # NLD -> LND
         x = self.clip_model.transformer(x)
         x = x.permute(1, 0, 2)  # LND -> NLD
         x = self.clip_model.ln_final(x).type(self.dtype)
 
-        # 取[EOS] token的特征
-        text_features = x[torch.arange(x.shape[0]), self.tokenized_prompts.argmax(
-            dim=-1)] @ self.clip_model.text_projection
+        # 修复EOS token位置获取
+        eot_token_pos = self.tokenized_prompts.argmax(dim=-1)
+        # 确保索引不超出实际序列长度
+        eot_token_pos = torch.clamp(eot_token_pos, 0, seq_len - 1)
+
+        text_features = x[torch.arange(x.shape[0]), eot_token_pos] @ self.clip_model.text_projection
 
         text_features = text_features.repeat(1, self.cfg.MODEL.PROJECT.NUM_VIEWS)
 
