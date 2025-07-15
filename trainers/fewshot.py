@@ -87,7 +87,7 @@ class CoOp_TextEncoder(nn.Module):
 
         # CoOp相关参数
         self.n_cls = len(classnames)
-        self.n_ctx = 16  # 可学习的context长度
+        self.n_ctx = 8  # 可学习的context长度
         self.ctx_init = ""  # context初始化方式
 
         # 获取token embedding维度
