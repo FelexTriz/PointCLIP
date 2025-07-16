@@ -14,7 +14,7 @@ CFG=rn101
 NUM_SHOTS=16
 
 # CoOp开关: true表示启用，false表示禁用
-USE_COOP=true
+USE_COOP=flase
 
 export CUDA_VISIBLE_DEVICES=0
 python train.py \
