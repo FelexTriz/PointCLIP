@@ -83,28 +83,29 @@ class CoOp_TextEncoder(nn.Module):
 
         # CoOp相关参数
         self.n_cls = len(classnames)
-        self.n_ctx = 8  # 可学习的context长度
-        self.ctx_init = "point cloud of a big {}."  # context初始化方式
+        self.n_ctx = 6  # "point cloud of a big"有6个token
+        self.ctx_init = "point cloud of a big"  # 用原始模板初始化，去掉{}和句号
 
         # 获取token embedding维度
         ctx_dim = clip_model.ln_final.weight.shape[0]
 
         if self.ctx_init:
-            # 使用特定文本初始化context
+            # 使用"point cloud of a big"初始化context
             ctx_init = self.ctx_init.replace("_", " ")
-            n_ctx = len(ctx_init.split(" "))
             prompt = clip.tokenize(ctx_init)
             with torch.no_grad():
                 embedding = clip_model.token_embedding(prompt).type(self.dtype)
-            ctx_vectors = embedding[0, 1: 1 + n_ctx, :]
+            # 获取除了SOS和EOS之外的token embeddings
+            ctx_vectors = embedding[0, 1: 1 + self.n_ctx, :]
             prompt_prefix = ctx_init
+            print(f'Using template initialization: "{prompt_prefix}"')
         else:
-            # 随机初始化
+            # 随机初始化（备用）
             ctx_vectors = torch.empty(self.n_ctx, ctx_dim, dtype=self.dtype)
             nn.init.normal_(ctx_vectors, std=0.02)
             prompt_prefix = " ".join(["X"] * self.n_ctx)
+            print(f'Using random initialization: "{prompt_prefix}"')
 
-        print(f'Initial context: "{prompt_prefix}"')
         print(f"Number of context words (tokens): {self.n_ctx}")
 
         # 可学习的context vectors
