@@ -81,89 +81,16 @@ class CoOp_TextEncoder(nn.Module):
         self.clip_model = clip_model
         self.dtype = clip_model.dtype
 
-        # CoOp相关参数
-        self.n_cls = len(classnames)
-        self.n_ctx = 6  # "point cloud of a big"有6个token
-        self.ctx_init = "point cloud of a big"  # 用原始模板初始化，去掉{}和句号
-
-        # 获取token embedding维度
-        ctx_dim = clip_model.ln_final.weight.shape[0]
-
-        if self.ctx_init:
-            # 使用"point cloud of a big"初始化context
-            ctx_init = self.ctx_init.replace("_", " ")
-            prompt = clip.tokenize(ctx_init)
-            with torch.no_grad():
-                embedding = clip_model.token_embedding(prompt).type(self.dtype)
-            # 获取除了SOS和EOS之外的token embeddings
-            ctx_vectors = embedding[0, 1: 1 + self.n_ctx, :]
-            prompt_prefix = ctx_init
-            print(f'Using template initialization: "{prompt_prefix}"')
-        else:
-            # 随机初始化（备用）
-            ctx_vectors = torch.empty(self.n_ctx, ctx_dim, dtype=self.dtype)
-            nn.init.normal_(ctx_vectors, std=0.02)
-            prompt_prefix = " ".join(["X"] * self.n_ctx)
-            print(f'Using random initialization: "{prompt_prefix}"')
-
-        print(f"Number of context words (tokens): {self.n_ctx}")
-
-        # 可学习的context vectors
-        self.ctx = nn.Parameter(ctx_vectors)
-
-        # 预处理类名
-        classnames = [name.replace("_", " ") for name in classnames]
-        prompts = [prompt_prefix + " " + name + "." for name in classnames]
-
-        tokenized_prompts = torch.cat([clip.tokenize(p) for p in prompts])
-        with torch.no_grad():
-            embedding = clip_model.token_embedding(tokenized_prompts).type(self.dtype)
-
-        # 注册为buffer，不参与梯度计算
-        self.register_buffer("token_prefix", embedding[:, :1, :])  # SOS
-        self.register_buffer("token_suffix", embedding[:, 1 + self.n_ctx:, :])  # CLS, EOS
-        self.register_buffer("tokenized_prompts", tokenized_prompts)
-
-        self.class_token_position = "end"
+        print("CoOp TextEncoder initialized - using fixed template for testing")
 
     def forward(self):
-        ctx = self.ctx
-        if ctx.dim() == 2:
-            ctx = ctx.unsqueeze(0).expand(self.n_cls, -1, -1)
-
-        prefix = self.token_prefix
-        suffix = self.token_suffix
-
-        prompts = torch.cat([prefix, ctx, suffix], dim=1)
-
-        # 手动实现CLIP文本编码，因为我们有自定义的embedding
-        x = prompts.type(self.dtype)
-
-        seq_len = x.shape[1]  # 获取实际序列长度 (75)
-        if seq_len <= self.clip_model.positional_embedding.shape[0]:
-            # 如果序列长度小于等于位置编码长度，截取位置编码
-            pos_emb = self.clip_model.positional_embedding[:seq_len].type(self.dtype)
-        else:
-            # 如果序列长度大于位置编码长度，填充位置编码（通常不会发生）
-            pos_emb = self.clip_model.positional_embedding.type(self.dtype)
-            # 可以重复最后一个位置编码或使用其他策略
-
-        x = x + pos_emb
-        x = x.permute(1, 0, 2)  # NLD -> LND
-        x = self.clip_model.transformer(x)
-        x = x.permute(1, 0, 2)  # LND -> NLD
-        x = self.clip_model.ln_final(x).type(self.dtype)
-
-        # 修复EOS token位置获取
-        eot_token_pos = self.tokenized_prompts.argmax(dim=-1)
-        # 确保索引不超出实际序列长度
-        eot_token_pos = torch.clamp(eot_token_pos, 0, seq_len - 1)
-
-        text_features = x[torch.arange(x.shape[0]), eot_token_pos] @ self.clip_model.text_projection
-
-        text_features = text_features.repeat(1, self.cfg.MODEL.PROJECT.NUM_VIEWS)
-
-        return text_features
+        # 暂时用固定模板测试，应该得到和原始TextEncoder相同的结果
+        temp = CUSTOM_TEMPLATES[self.cfg.DATASET.NAME]  # 'point cloud of a big {}.'
+        prompts = [temp.format(c.replace('_', ' ')) for c in self.classnames]
+        prompts = torch.cat([clip.tokenize(p) for p in prompts])
+        prompts = prompts.cuda()
+        text_feat = self.clip_model.encode_text(prompts).repeat(1, self.cfg.MODEL.PROJECT.NUM_VIEWS)
+        return text_feat
 
 class Textual_Encoder(nn.Module):
 
@@ -326,7 +253,7 @@ class PointCLIP_FS(TrainerX):
                     param.requires_grad_(False)
             params_to_optimize = [
                 {'params': list(self.model.adapter.parameters()), 'lr': cfg.OPTIM.LR},
-                {'params': list(self.model.textual_encoder.parameters()), 'lr': cfg.OPTIM.LR * 0.1}  # 文本参数用更小学习率
+                {'params': list(self.model.textual_encoder.parameters()), 'lr': cfg.OPTIM.LR * 0.5}  # 提高学习率
             ]
             self.optim = build_optimizer(params_to_optimize, cfg.OPTIM)
 
