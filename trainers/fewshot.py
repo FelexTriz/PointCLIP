@@ -167,7 +167,7 @@ class CoOp_TextEncoder(nn.Module):
 
         return text_features
 
-class Textual_Encoder(nn.Module):
+class TextualEncoder(nn.Module):
 
     def __init__(self, cfg, classnames, clip_model):
         super().__init__()
@@ -198,7 +198,7 @@ class PointCLIP_Model(nn.Module):
             self.textual_encoder = CoOp_TextEncoder(cfg, classnames, clip_model)
             print("Using CoOp TextEncoder")
         else:
-            self.textual_encoder = Textual_Encoder(cfg, classnames, clip_model)
+            self.textual_encoder = TextualEncoder(cfg, classnames, clip_model)
             print("Using Original TextEncoder")
 
         self.logit_scale = clip_model.logit_scale
