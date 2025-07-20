@@ -341,7 +341,7 @@ class PointCLIP_FS(TrainerX):
             # TextEncoder使用Adam
             self.text_optim = torch.optim.Adam(
                 text_params,
-                lr=0.001,  # Adam通常用更小的学习率
+                lr=0.01,   # 改为0.01，和SGD一样
                 betas=(0.9, 0.999),
                 weight_decay=1e-5
             )
