@@ -81,87 +81,25 @@ class CoOp_TextEncoder(nn.Module):
         self.clip_model = clip_model
         self.dtype = clip_model.dtype
 
-        # CoOp相关参数 - 修正token数量
+        # 使用简单的可学习权重先测试
         self.n_cls = len(classnames)
-        self.ctx_init = "point cloud of a big"
-        self.n_ctx = len(self.ctx_init.split(" "))  # 正确计算为5个token
+        self.ctx_weight = nn.Parameter(torch.ones(1, dtype=self.dtype))
 
-        # 获取token embedding维度
-        ctx_dim = clip_model.ln_final.weight.shape[0]
-
-        if self.ctx_init:
-            # 使用特定文本初始化context
-            ctx_init = self.ctx_init.replace("_", " ")
-            prompt = clip.tokenize(ctx_init)
-            with torch.no_grad():
-                embedding = clip_model.token_embedding(prompt).type(self.dtype)
-            ctx_vectors = embedding[0, 1: 1 + self.n_ctx, :]  # 现在是正确的5个token
-            prompt_prefix = ctx_init
-        else:
-            # 随机初始化
-            ctx_vectors = torch.empty(self.n_ctx, ctx_dim, dtype=self.dtype)
-            nn.init.normal_(ctx_vectors, std=0.02)
-            prompt_prefix = " ".join(["X"] * self.n_ctx)
-
-        print(f'Initial context: "{prompt_prefix}"')
-        print(f"Number of context words (tokens): {self.n_ctx}")
-        print(f"Context vectors shape: {ctx_vectors.shape}")
-
-        # 可学习的context vectors
-        self.ctx = nn.Parameter(ctx_vectors)
-
-        # 预处理类名
-        classnames = [name.replace("_", " ") for name in classnames]
-        prompts = [prompt_prefix + " " + name + "." for name in classnames]
-
-        tokenized_prompts = torch.cat([clip.tokenize(p) for p in prompts])
-        with torch.no_grad():
-            embedding = clip_model.token_embedding(tokenized_prompts).type(self.dtype)
-
-        # 注册为buffer，不参与梯度计算
-        self.register_buffer("token_prefix", embedding[:, :1, :])  # SOS
-        self.register_buffer("token_suffix", embedding[:, 1 + self.n_ctx:, :])  # CLS, EOS
-        self.register_buffer("tokenized_prompts", tokenized_prompts)
-
-        self.class_token_position = "end"
+        print(f"CoOp TextEncoder initialized with learnable weight: {self.ctx_weight.item()}")
 
     def forward(self):
-        ctx = self.ctx
-        if ctx.dim() == 2:
-            ctx = ctx.unsqueeze(0).expand(self.n_cls, -1, -1)
+        # 使用原始模板但乘以可学习权重
+        temp = CUSTOM_TEMPLATES[self.cfg.DATASET.NAME]
+        prompts = [temp.format(c.replace('_', ' ')) for c in self.classnames]
+        prompts = torch.cat([clip.tokenize(p) for p in prompts])
+        prompts = prompts.cuda()
 
-        prefix = self.token_prefix
-        suffix = self.token_suffix
+        text_feat = self.clip_model.encode_text(prompts)
+        text_feat = text_feat * self.ctx_weight  # 应用可学习权重
+        text_feat = text_feat.repeat(1, self.cfg.MODEL.PROJECT.NUM_VIEWS)
 
-        prompts = torch.cat([prefix, ctx, suffix], dim=1)
+        return text_feat
 
-        # 手动实现CLIP文本编码，修复位置编码维度匹配问题
-        x = prompts.type(self.dtype)
-
-        # 修复位置编码维度匹配
-        seq_len = x.shape[1]
-        if seq_len <= self.clip_model.positional_embedding.shape[0]:
-            pos_emb = self.clip_model.positional_embedding[:seq_len].type(self.dtype)
-        else:
-            # 如果序列比位置编码长，重复最后一个位置编码
-            pos_emb = self.clip_model.positional_embedding.type(self.dtype)
-            additional_pos = pos_emb[-1:].repeat(seq_len - pos_emb.shape[0], 1)
-            pos_emb = torch.cat([pos_emb, additional_pos], dim=0)
-
-        x = x + pos_emb
-        x = x.permute(1, 0, 2)  # NLD -> LND
-        x = self.clip_model.transformer(x)
-        x = x.permute(1, 0, 2)  # LND -> NLD
-        x = self.clip_model.ln_final(x).type(self.dtype)
-
-        # 修复EOS token位置获取
-        eot_token_pos = self.tokenized_prompts.argmax(dim=-1)
-        eot_token_pos = torch.clamp(eot_token_pos, 0, seq_len - 1)
-
-        text_features = x[torch.arange(x.shape[0]), eot_token_pos] @ self.clip_model.text_projection
-        text_features = text_features.repeat(1, self.cfg.MODEL.PROJECT.NUM_VIEWS)
-
-        return text_features
 
 class Textual_Encoder(nn.Module):
 
@@ -316,47 +254,23 @@ class PointCLIP_FS(TrainerX):
         print('Building PointCLIP with CoOp' if use_coop else 'Building PointCLIP')
         self.model = PointCLIP_Model(cfg, classnames, clip_model, use_coop)
 
-        # 根据是否启用CoOp来决定哪些参数需要梯度
         if use_coop:
             print('Turning off gradients in visual encoder')
             for name, param in self.model.named_parameters():
                 if 'adapter' not in name and 'textual_encoder.ctx' not in name:
                     param.requires_grad_(False)
 
-            # 使用不同的优化器
-            adapter_params = list(self.model.adapter.parameters())
-            text_params = list(self.model.textual_encoder.parameters())
+            # 使用单一优化器 - 统一管理所有可训练参数
+            params_to_optimize = []
+            params_to_optimize.extend(list(self.model.adapter.parameters()))
+            params_to_optimize.extend(list(self.model.textual_encoder.parameters()))
 
-            print(f"Adapter parameters: {sum(p.numel() for p in adapter_params)}")
-            print(f"Text parameters: {sum(p.numel() for p in text_params)}")
+            print(f"Total trainable parameters: {sum(p.numel() for p in params_to_optimize)}")
 
-            # Adapter使用SGD
-            self.adapter_optim = torch.optim.SGD(
-                adapter_params,
-                lr=cfg.OPTIM.LR,
-                momentum=0.9,
-                weight_decay=1e-4
-            )
-
-            # TextEncoder使用Adam
-            self.text_optim = torch.optim.Adam(
-                text_params,
-                lr=0.01,   # 改为0.01，和SGD一样
-                betas=(0.9, 0.999),
-                weight_decay=1e-5
-            )
-
-            # 学习率调度器
-            self.adapter_sched = torch.optim.lr_scheduler.CosineAnnealingLR(
-                self.adapter_optim, T_max=cfg.OPTIM.MAX_EPOCH
-            )
-            self.text_sched = torch.optim.lr_scheduler.CosineAnnealingLR(
-                self.text_optim, T_max=cfg.OPTIM.MAX_EPOCH
-            )
-
-            # 分别注册两个优化器，而不是传递列表
-            self.register_model('adapter', self.model.adapter, self.adapter_optim, self.adapter_sched)
-            self.register_model('textual_encoder', self.model.textual_encoder, self.text_optim, self.text_sched)
+            # 使用统一的优化器
+            self.optim = build_optimizer(params_to_optimize, cfg.OPTIM)
+            self.sched = build_lr_scheduler(self.optim, cfg.OPTIM)
+            self.register_model('pointclip_coop', self.model, self.optim, self.sched)
         else:
             print('Turning off gradients in both visual and textual encoders')
             for name, param in self.model.named_parameters():
@@ -425,21 +339,8 @@ class PointCLIP_FS(TrainerX):
         output = self.model(image)
         loss = smooth_loss(output, label, self.epoch, self.max_epoch)
 
-        # 如果使用CoOp，需要更新两个优化器
-        use_coop = getattr(self.cfg, 'USE_COOP', False)
-        if use_coop:
-            # 清零梯度
-            self.adapter_optim.zero_grad()
-            self.text_optim.zero_grad()
-
-            # 反向传播
-            loss.backward()
-
-            # 更新参数
-            self.adapter_optim.step()
-            self.text_optim.step()
-        else:
-            self.model_backward_and_update(loss)
+        # 使用Dassl框架的标准更新机制
+        self.model_backward_and_update(loss)
 
         loss_summary = {
             'loss': loss.item(),
@@ -452,19 +353,5 @@ class PointCLIP_FS(TrainerX):
         return loss_summary
 
     def update_lr(self):
-        """更新学习率"""
-        use_coop = getattr(self.cfg, 'USE_COOP', False)
-        if use_coop:
-            self.adapter_sched.step()
-            self.text_sched.step()
-        else:
-            super().update_lr()
-
-    def get_current_lr(self, names=None):
-        """重写get_current_lr方法来处理多个优化器"""
-        use_coop = getattr(self.cfg, 'USE_COOP', False)
-        if use_coop:
-            # 返回adapter的学习率作为主要学习率
-            return self.adapter_optim.param_groups[0]['lr']
-        else:
-            return super().get_current_lr(names)
+        """使用标准的学习率更新"""
+        super().update_lr()
