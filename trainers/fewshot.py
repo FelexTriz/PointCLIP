@@ -1,18 +1,14 @@
 import os.path as osp
-
 import torch
 import torch.nn as nn
-from torch.nn import functional as F
-
 from dassl.engine import TRAINER_REGISTRY, TrainerX
 from dassl.metrics import compute_accuracy
-from dassl.utils import load_pretrained_weights, load_checkpoint
 from dassl.optim import build_optimizer, build_lr_scheduler
+from dassl.utils import load_pretrained_weights, load_checkpoint
+from torch.nn import functional as F
 
 from clip import clip
 from trainers.mv_utils_fs import PCViews
-
-
 
 CUSTOM_TEMPLATES = {
     'ModelNet40': 'point cloud of a big {}.',
@@ -326,16 +322,42 @@ class PointCLIP_FS(TrainerX):
             for name, param in self.model.named_parameters():
                 if 'adapter' not in name and 'textual_encoder.ctx' not in name:
                     param.requires_grad_(False)
-            params_to_optimize = [
-                {'params': list(self.model.adapter.parameters()), 'lr': cfg.OPTIM.LR},
-                {'params': list(self.model.textual_encoder.parameters()), 'lr': cfg.OPTIM.LR * 0.1}  # 文本参数用更小学习率
-            ]
-            self.optim = build_optimizer(params_to_optimize, cfg.OPTIM)
 
-            # 同时优化adapter和context
+            # 使用不同的优化器
+            adapter_params = list(self.model.adapter.parameters())
+            text_params = list(self.model.textual_encoder.parameters())
 
-            self.sched = build_lr_scheduler(self.optim, cfg.OPTIM)
-            self.register_model('pointclip_coop', self.model, self.optim, self.sched)
+            print(f"Adapter parameters: {sum(p.numel() for p in adapter_params)}")
+            print(f"Text parameters: {sum(p.numel() for p in text_params)}")
+
+            # Adapter使用SGD
+            self.adapter_optim = torch.optim.SGD(
+                adapter_params,
+                lr=cfg.OPTIM.LR,
+                momentum=0.9,
+                weight_decay=1e-4
+            )
+
+            # TextEncoder使用Adam
+            self.text_optim = torch.optim.Adam(
+                text_params,
+                lr=0.001,  # Adam通常用更小的学习率
+                betas=(0.9, 0.999),
+                weight_decay=1e-5
+            )
+
+            # 学习率调度器
+            self.adapter_sched = torch.optim.lr_scheduler.CosineAnnealingLR(
+                self.adapter_optim, T_max=cfg.OPTIM.MAX_EPOCH
+            )
+            self.text_sched = torch.optim.lr_scheduler.CosineAnnealingLR(
+                self.text_optim, T_max=cfg.OPTIM.MAX_EPOCH
+            )
+
+            # 注册模型和优化器
+            self.register_model('pointclip_coop', self.model,
+                              [self.adapter_optim, self.text_optim],
+                              [self.adapter_sched, self.text_sched])
         else:
             print('Turning off gradients in both visual and textual encoders')
             for name, param in self.model.named_parameters():
@@ -356,23 +378,6 @@ class PointCLIP_FS(TrainerX):
         if device_count > 1:
             print(f'Multiple GPUs detected (n_gpus={device_count}), use all of them!')
             self.model = nn.DataParallel(self.model)
-
-    # 其他方法保持不变...
-    def forward_backward(self, batch):
-        image, label = self.parse_batch_train(batch)
-        output = self.model(image)
-        loss = smooth_loss(output, label, self.epoch, self.max_epoch)
-        self.model_backward_and_update(loss)
-
-        loss_summary = {
-            'loss': loss.item(),
-            'acc': compute_accuracy(output, label)[0].item()
-        }
-
-        if (self.batch_idx + 1) == self.num_batches:
-            self.update_lr()
-
-        return loss_summary
 
     def parse_batch_train(self, batch):
         input = batch['img']
@@ -415,3 +420,48 @@ class PointCLIP_FS(TrainerX):
 
             # set strict=False
             self._models[name].load_state_dict(state_dict, strict=False)
+
+    def forward_backward(self, batch):
+        image, label = self.parse_batch_train(batch)
+        output = self.model(image)
+        loss = smooth_loss(output, label, self.epoch, self.max_epoch)
+
+        # 如果使用CoOp，需要更新两个优化器
+        use_coop = getattr(self.cfg, 'USE_COOP', False)
+        if use_coop:
+            # 清零梯度
+            self.adapter_optim.zero_grad()
+            self.text_optim.zero_grad()
+
+            # 反向传播
+            loss.backward()
+
+            # 更新参数
+            self.adapter_optim.step()
+            self.text_optim.step()
+        else:
+            self.model_backward_and_update(loss)
+
+        loss_summary = {
+            'loss': loss.item(),
+            'acc': compute_accuracy(output, label)[0].item()
+        }
+
+        if (self.batch_idx + 1) == self.num_batches:
+            self.update_lr()
+
+        return loss_summary
+
+    def update_lr(self):
+        """更新学习率"""
+        use_coop = getattr(self.cfg, 'USE_COOP', False)
+        if use_coop:
+            self.adapter_sched.step()
+            self.text_sched.step()
+
+            current_lr_adapter = self.adapter_sched.get_last_lr()[0]
+            current_lr_text = self.text_sched.get_last_lr()[0]
+
+            print(f"Adapter LR: {current_lr_adapter:.6f}, Text LR: {current_lr_text:.6f}")
+        else:
+            super().update_lr()
