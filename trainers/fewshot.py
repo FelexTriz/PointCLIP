@@ -354,10 +354,9 @@ class PointCLIP_FS(TrainerX):
                 self.text_optim, T_max=cfg.OPTIM.MAX_EPOCH
             )
 
-            # 注册模型和优化器
-            self.register_model('pointclip_coop', self.model,
-                              [self.adapter_optim, self.text_optim],
-                              [self.adapter_sched, self.text_sched])
+            # 分别注册两个优化器，而不是传递列表
+            self.register_model('adapter', self.model.adapter, self.adapter_optim, self.adapter_sched)
+            self.register_model('textual_encoder', self.model.textual_encoder, self.text_optim, self.text_sched)
         else:
             print('Turning off gradients in both visual and textual encoders')
             for name, param in self.model.named_parameters():
@@ -458,10 +457,14 @@ class PointCLIP_FS(TrainerX):
         if use_coop:
             self.adapter_sched.step()
             self.text_sched.step()
-
-            current_lr_adapter = self.adapter_sched.get_last_lr()[0]
-            current_lr_text = self.text_sched.get_last_lr()[0]
-
-            print(f"Adapter LR: {current_lr_adapter:.6f}, Text LR: {current_lr_text:.6f}")
         else:
             super().update_lr()
+
+    def get_current_lr(self, names=None):
+        """重写get_current_lr方法来处理多个优化器"""
+        use_coop = getattr(self.cfg, 'USE_COOP', False)
+        if use_coop:
+            # 返回adapter的学习率作为主要学习率
+            return self.adapter_optim.param_groups[0]['lr']
+        else:
+            return super().get_current_lr(names)
