@@ -81,24 +81,58 @@ class CoOp_TextEncoder(nn.Module):
         self.clip_model = clip_model
         self.dtype = clip_model.dtype
 
-        # 使用简单的可学习权重先测试
+        # 实现真正的可学习context
         self.n_cls = len(classnames)
-        self.ctx_weight = nn.Parameter(torch.ones(1, dtype=self.dtype))
+        self.n_ctx = 4  # 可学习的context长度
 
-        print(f"CoOp TextEncoder initialized with learnable weight: {self.ctx_weight.item()}")
+        # 获取embedding维度
+        ctx_dim = clip_model.ln_final.weight.shape[0]
+
+        # 使用"point cloud of a big"初始化
+        init_text = "point cloud of a"
+        prompt = clip.tokenize(init_text)
+        with torch.no_grad():
+            embedding = clip_model.token_embedding(prompt).type(self.dtype)
+        ctx_vectors = embedding[0, 1:1 + self.n_ctx, :]  # 获取4个token的embedding
+
+        # 可学习的context vectors
+        self.ctx = nn.Parameter(ctx_vectors)
+
+        print(f"CoOp TextEncoder with {self.n_ctx} learnable context tokens")
 
     def forward(self):
-        # 使用原始模板但乘以可学习权重
-        temp = CUSTOM_TEMPLATES[self.cfg.DATASET.NAME]
-        prompts = [temp.format(c.replace('_', ' ')) for c in self.classnames]
-        prompts = torch.cat([clip.tokenize(p) for p in prompts])
-        prompts = prompts.cuda()
+        # 构建可学习的prompts
+        prompts = []
+        for classname in self.classnames:
+            # 使用固定模板但替换前4个token为可学习的
+            prompt_text = "X X X X " + classname.replace('_', ' ') + " ."
+            prompts.append(prompt_text)
 
-        text_feat = self.clip_model.encode_text(prompts)
-        text_feat = text_feat * self.ctx_weight  # 应用可学习权重
-        text_feat = text_feat.repeat(1, self.cfg.MODEL.PROJECT.NUM_VIEWS)
+        tokenized_prompts = torch.cat([clip.tokenize(p) for p in prompts]).cuda()
 
-        return text_feat
+        # 获取embedding并替换X tokens
+        with torch.no_grad():
+            embeddings = self.clip_model.token_embedding(tokenized_prompts).type(self.dtype)
+
+        # 替换前4个X token为可学习的context
+        embeddings[:, 1:5, :] = self.ctx.unsqueeze(0).expand(len(self.classnames), -1, -1)
+
+        # 手动编码
+        seq_len = embeddings.shape[1]
+        pos_emb = self.clip_model.positional_embedding[:seq_len].type(self.dtype)
+
+        x = embeddings + pos_emb
+        x = x.permute(1, 0, 2)  # NLD -> LND
+        x = self.clip_model.transformer(x)
+        x = x.permute(1, 0, 2)  # LND -> NLD
+        x = self.clip_model.ln_final(x).type(self.dtype)
+
+        # 取EOS token特征
+        eot_token = tokenized_prompts.argmax(dim=-1)
+        text_features = x[torch.arange(x.shape[0]), eot_token] @ self.clip_model.text_projection
+        text_features = text_features.repeat(1, self.cfg.MODEL.PROJECT.NUM_VIEWS)
+
+        return text_features
 
 
 class Textual_Encoder(nn.Module):

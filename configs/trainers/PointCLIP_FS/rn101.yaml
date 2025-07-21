@@ -7,12 +7,12 @@ DATALOADER:
 
 OPTIM:
   NAME: 'sgd'
-  LR: 0.01
-  MAX_EPOCH: 250
+  LR: 0.02        # 提高学习率
+  MAX_EPOCH: 300  # 增加训练轮数
   LR_SCHEDULER: 'cosine'
-  WARMUP_EPOCH: 1
-  WARMUP_TYPE: 'constant'
-  WARMUP_CONS_LR: 1e-5
+  WARMUP_EPOCH: 5   # 增加warm-up
+  WARMUP_TYPE: 'linear'  # 改为线性warm-up
+  WARMUP_CONS_LR: 1e-6
 
 TRAIN:
   PRINT_FREQ: 5
@@ -27,9 +27,9 @@ MODEL:
   PROJECT:
     NUM_VIEWS: 10
   ADAPTER:
-    RATIO: 0.6
-    INIT: 1.0
-    DROPOUT: 0.1
+    RATIO: 0.7      # 调整adapter比例
+    INIT: 1.2       # 调整初始化值
+    DROPOUT: 0.05   # 减少dropout
 
 SEARCH:
   TIME: 4
