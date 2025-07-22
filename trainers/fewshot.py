@@ -1,6 +1,7 @@
 import os.path as osp
 import torch
 import torch.nn as nn
+import numpy as np  # 添加这行
 from dassl.engine import TRAINER_REGISTRY, TrainerX
 from dassl.metrics import compute_accuracy
 from dassl.optim import build_optimizer, build_lr_scheduler
