@@ -31,6 +31,36 @@ def smooth_loss(pred, gold,epoch,max_epochs):
     loss = -(one_hot * log_prb).sum(dim=1).mean()
     return loss
 
+def improved_dynamic_eps(epoch, max_epochs):
+    # 更平滑的epsilon衰减策略
+    progress = epoch / max_epochs
+
+    # 使用cosine衰减
+    eps_start = 0.3
+    eps_end = 0.05
+    eps = eps_end + (eps_start - eps_end) * (1 + np.cos(np.pi * progress)) / 2
+
+    return eps
+
+def adaptive_smooth_loss(pred, gold, epoch, max_epochs):
+    eps = improved_dynamic_eps(epoch, max_epochs)
+    n_class = pred.size(1)
+
+    # 基于预测置信度的自适应平滑
+    pred_probs = F.softmax(pred, dim=1)
+    max_probs = pred_probs.max(dim=1)[0]
+
+    # 对于置信度高的样本，减少标签平滑
+    confidence_factor = torch.exp(-2 * max_probs)
+    adaptive_eps = eps * confidence_factor.unsqueeze(1)
+
+    one_hot = torch.zeros_like(pred).scatter(1, gold.view(-1, 1), 1)
+    one_hot = one_hot * (1 - adaptive_eps) + (1 - one_hot) * adaptive_eps / (n_class - 1)
+    log_prb = F.log_softmax(pred, dim=1)
+
+    loss = -(one_hot * log_prb).sum(dim=1).mean()
+    return loss
+
 class BatchNormPoint(nn.Module):
     def __init__(self, feat_size, sync_bn=False):
         super().__init__()
@@ -371,7 +401,7 @@ class PointCLIP_FS(TrainerX):
     def forward_backward(self, batch):
         image, label = self.parse_batch_train(batch)
         output = self.model(image)
-        loss = smooth_loss(output, label, self.epoch, self.max_epoch)
+        loss = adaptive_smooth_loss(output, label, self.epoch, self.max_epoch)
 
         # 使用Dassl框架的标准更新机制
         self.model_backward_and_update(loss)
