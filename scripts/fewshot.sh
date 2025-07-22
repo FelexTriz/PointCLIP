@@ -16,7 +16,7 @@ NUM_SHOTS=16
 # CoOp开关: true表示启用，false表示禁用
 USE_COOP=true
 
-export CUDA_VISIBLE_DEVICES=0
+export CUDA_VISIBLE_DEVICES=1
 python train.py \
 --root ${DATA} \
 --trainer ${TRAINER} \
