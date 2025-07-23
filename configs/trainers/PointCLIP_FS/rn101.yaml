@@ -30,7 +30,6 @@ MODEL:
     RATIO: 0.7      # 调整adapter比例
     INIT: 1.2       # 调整初始化值
     DROPOUT: 0.05   # 减少dropout
-  LIGHTWEIGHT_ADAPTER: true  # 添加这行，true使用轻量级版本，false使用完整版本
 
 SEARCH:
   TIME: 4
