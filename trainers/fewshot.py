@@ -208,8 +208,17 @@ class PointCLIP_Model(nn.Module):
         pc_views = PCViews()
         self.get_img = pc_views.get_img
 
-        # inter-view Adapter
-        self.adapter = Adapter(cfg).to(clip_model.dtype)
+        # 使用增强的adapter
+        # self.adapter = Adapter(cfg).to(clip_model.dtype)  # 注释掉原来的
+
+        # 选择使用哪个版本
+        use_lightweight = getattr(cfg.MODEL, 'LIGHTWEIGHT_ADAPTER', True)
+        if use_lightweight:
+            self.adapter = LightweightEnhancedAdapter(cfg).to(clip_model.dtype)
+            print("Using Lightweight Enhanced Adapter")
+        else:
+            self.adapter = EnhancedAdapter(cfg).to(clip_model.dtype)
+            print("Using Full Enhanced Adapter")
 
         # Store features for post-process view-weight search
         self.store = False
@@ -297,6 +306,214 @@ class Adapter(nn.Module):
         img_feat = view_feat * self.adapter_ratio + res_feat * (1 - self.adapter_ratio)
 
         return img_feat
+
+
+class EnhancedAdapter(nn.Module):
+    """
+    Enhanced Inter-view Adapter with attention and multi-scale features
+    """
+
+    def __init__(self, cfg):
+        super().__init__()
+
+        self.num_views = cfg.MODEL.PROJECT.NUM_VIEWS
+        self.in_features = cfg.MODEL.BACKBONE.CHANNEL
+        self.adapter_ratio = cfg.MODEL.ADAPTER.RATIO
+        self.fusion_init = cfg.MODEL.ADAPTER.INIT
+        self.dropout = cfg.MODEL.ADAPTER.DROPOUT
+
+        # 可学习的视图融合权重
+        self.fusion_ratio = nn.Parameter(torch.tensor([self.fusion_init] * self.num_views), requires_grad=True)
+
+        # 多头自注意力机制
+        self.self_attention = nn.MultiheadAttention(
+            embed_dim=self.in_features,
+            num_heads=8,
+            dropout=self.dropout,
+            batch_first=True
+        )
+
+        # 交叉注意力 - 视图间交互
+        self.cross_attention = nn.MultiheadAttention(
+            embed_dim=self.in_features,
+            num_heads=4,
+            dropout=self.dropout,
+            batch_first=True
+        )
+
+        # 多尺度特征提取
+        self.multi_scale_convs = nn.ModuleList([
+            nn.Conv1d(self.in_features, self.in_features // 2, kernel_size=1),
+            nn.Conv1d(self.in_features, self.in_features // 2, kernel_size=3, padding=1, groups=4),
+            nn.Conv1d(self.in_features, self.in_features // 2, kernel_size=5, padding=2, groups=8),
+        ])
+
+        # 特征融合层
+        self.feature_fusion = nn.Sequential(
+            nn.Linear(self.in_features * 3 // 2, self.in_features),
+            nn.LayerNorm(self.in_features),
+            nn.GELU(),
+            nn.Dropout(self.dropout)
+        )
+
+        # 增强的全局特征提取器
+        self.global_f = nn.Sequential(
+            BatchNormPoint(self.in_features),
+            nn.Dropout(self.dropout),
+            nn.Flatten(),
+            nn.Linear(self.in_features * self.num_views, self.in_features * 2),
+            nn.LayerNorm(self.in_features * 2),
+            nn.GELU(),
+            nn.Dropout(self.dropout),
+            nn.Linear(self.in_features * 2, self.in_features),
+            nn.LayerNorm(self.in_features),
+            nn.GELU()
+        )
+
+        # 增强的视图特征提取器
+        self.view_f = nn.Sequential(
+            nn.Linear(self.in_features, self.in_features * 2),
+            nn.LayerNorm(self.in_features * 2),
+            nn.GELU(),
+            nn.Dropout(self.dropout),
+            nn.Linear(self.in_features * 2, self.in_features * self.num_views),
+            nn.LayerNorm(self.in_features * self.num_views),
+            nn.GELU()
+        )
+
+        # 门控机制
+        self.gate = nn.Sequential(
+            nn.Linear(self.in_features * self.num_views * 2, self.in_features * self.num_views),
+            nn.Sigmoid()
+        )
+
+        # 视图重要性权重
+        self.view_importance = nn.Parameter(torch.ones(self.num_views), requires_grad=True)
+
+    def forward(self, feat):
+        batch_size = feat.shape[0] // self.num_views
+
+        # 重塑特征 [B*V, C] -> [B, V, C]
+        img_feat = feat.reshape(batch_size, self.num_views, self.in_features)
+
+        # 1. 多尺度特征提取
+        multi_scale_features = []
+        feat_transposed = img_feat.transpose(1, 2)  # [B, C, V]
+
+        for conv in self.multi_scale_convs:
+            ms_feat = conv(feat_transposed)  # [B, C//2, V]
+            multi_scale_features.append(ms_feat.transpose(1, 2))  # [B, V, C//2]
+
+        # 拼接多尺度特征
+        multi_scale_feat = torch.cat(multi_scale_features, dim=-1)  # [B, V, C*3//2]
+        multi_scale_feat = self.feature_fusion(multi_scale_feat)  # [B, V, C]
+
+        # 2. 自注意力 - 视图内特征增强
+        attended_feat, _ = self.self_attention(multi_scale_feat, multi_scale_feat, multi_scale_feat)
+
+        # 3. 交叉注意力 - 视图间交互
+        cross_attended_feat, attention_weights = self.cross_attention(
+            attended_feat, img_feat, img_feat
+        )
+
+        # 4. 特征融合（残差连接）
+        enhanced_feat = img_feat + attended_feat + cross_attended_feat * 0.5
+
+        # 5. 应用可学习的视图权重和重要性权重
+        view_weights = F.softmax(self.view_importance, dim=0)
+        weighted_feat = enhanced_feat * self.fusion_ratio.reshape(1, -1, 1) * view_weights.reshape(1, -1, 1)
+
+        # 6. 全局特征提取
+        global_feat = self.global_f(weighted_feat)
+
+        # 7. 视图特征生成
+        view_feat = self.view_f(global_feat)
+
+        # 8. 门控融合
+        original_feat = feat.reshape(batch_size, -1)
+        combined_feat = torch.cat([view_feat, original_feat], dim=-1)
+        gate_weights = self.gate(combined_feat)
+
+        # 9. 最终融合
+        final_feat = view_feat * gate_weights * self.adapter_ratio + original_feat * (1 - self.adapter_ratio)
+
+        return final_feat
+
+
+# 轻量级版本的增强Adapter（如果上面的太复杂）
+class LightweightEnhancedAdapter(nn.Module):
+    """
+    Lightweight Enhanced Adapter - 更简单但仍有效的版本
+    """
+
+    def __init__(self, cfg):
+        super().__init__()
+
+        self.num_views = cfg.MODEL.PROJECT.NUM_VIEWS
+        self.in_features = cfg.MODEL.BACKBONE.CHANNEL
+        self.adapter_ratio = cfg.MODEL.ADAPTER.RATIO
+        self.fusion_init = cfg.MODEL.ADAPTER.INIT
+        self.dropout = cfg.MODEL.ADAPTER.DROPOUT
+
+        # 可学习的视图权重
+        self.fusion_ratio = nn.Parameter(torch.tensor([self.fusion_init] * self.num_views), requires_grad=True)
+
+        # 简化的注意力机制
+        self.attention = nn.Sequential(
+            nn.Linear(self.in_features, self.in_features // 4),
+            nn.ReLU(),
+            nn.Linear(self.in_features // 4, 1),
+            nn.Sigmoid()
+        )
+
+        # 增强的全局特征提取
+        self.global_f = nn.Sequential(
+            BatchNormPoint(self.in_features),
+            nn.Dropout(self.dropout),
+            nn.Flatten(),
+            nn.Linear(self.in_features * self.num_views, self.in_features * 2),
+            nn.BatchNorm1d(self.in_features * 2),
+            nn.GELU(),  # 使用GELU替代ReLU
+            nn.Dropout(self.dropout),
+            nn.Linear(self.in_features * 2, self.in_features),
+            nn.BatchNorm1d(self.in_features),
+            nn.GELU()
+        )
+
+        # 增强的视图特征提取
+        self.view_f = nn.Sequential(
+            nn.Linear(self.in_features, self.in_features * 2),
+            nn.GELU(),
+            nn.Dropout(self.dropout),
+            nn.Linear(self.in_features * 2, self.in_features * self.num_views),
+            nn.GELU()
+        )
+
+        # 残差连接的权重
+        self.residual_weight = nn.Parameter(torch.tensor(0.5), requires_grad=True)
+
+    def forward(self, feat):
+        batch_size = feat.shape[0] // self.num_views
+        img_feat = feat.reshape(batch_size, self.num_views, self.in_features)
+        res_feat = feat.reshape(batch_size, self.num_views * self.in_features)
+
+        # 计算注意力权重
+        att_weights = self.attention(img_feat)  # [B, V, 1]
+
+        # 应用注意力和融合权重
+        weighted_feat = img_feat * att_weights * self.fusion_ratio.reshape(1, -1, 1)
+
+        # 全局特征
+        global_feat = self.global_f(weighted_feat)
+
+        # 视图特征
+        view_feat = self.view_f(global_feat)
+
+        # 自适应残差连接
+        adaptive_ratio = self.adapter_ratio * torch.sigmoid(self.residual_weight)
+        final_feat = view_feat * adaptive_ratio + res_feat * (1 - adaptive_ratio)
+
+        return final_feat
 
 
 @TRAINER_REGISTRY.register()
