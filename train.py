@@ -1,15 +1,12 @@
 import argparse
 import torch
-
-from dassl.utils import setup_logger, set_random_seed, collect_env_info
 from dassl.config import get_cfg_default
 from dassl.engine import build_trainer
+from dassl.utils import setup_logger, set_random_seed, collect_env_info
 
 import datasets.modelnet40
-
 from trainers import zeroshot, fewshot
 from trainers.search_weights import search_weights_zs, search_weights_fs
-
 
 
 def print_args(args, cfg):
@@ -57,18 +54,11 @@ def reset_cfg(cfg, args):
 
 
 def extend_cfg(cfg):
-    """
-    Add new config variables.
-
-    E.g.
-        from yacs.config import CfgNode as CN
-        cfg.TRAINER.MY_MODEL = CN()
-        cfg.TRAINER.MY_MODEL.PARAM_A = 1.
-        cfg.TRAINER.MY_MODEL.PARAM_B = 0.5
-        cfg.TRAINER.MY_MODEL.PARAM_C = False
-    """
     from yacs.config import CfgNode as CN
     cfg.TRAINER.EXTRA = CN()
+
+    # 添加 LIGHTWEIGHT_ADAPTER 配置项
+    cfg.MODEL.LIGHTWEIGHT_ADAPTER = True
 
 
 def setup_cfg(args):

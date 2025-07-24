@@ -6,12 +6,13 @@ DATALOADER:
   NUM_WORKERS: 8
 
 OPTIM:
-  NAME: 'sgd'
-  LR: 0.02        # 提高学习率
-  MAX_EPOCH: 300  # 增加训练轮数
+  NAME: 'adamw'     # 尝试AdamW优化器
+  LR: 0.001         # 降低学习率
+  WEIGHT_DECAY: 0.05
+  MAX_EPOCH: 200    # 适当减少epoch
   LR_SCHEDULER: 'cosine'
-  WARMUP_EPOCH: 5   # 增加warm-up
-  WARMUP_TYPE: 'linear'  # 改为线性warm-up
+  WARMUP_EPOCH: 10  # 增加warmup
+  WARMUP_TYPE: 'linear'
   WARMUP_CONS_LR: 1e-6
 
 TRAIN:
@@ -27,9 +28,10 @@ MODEL:
   PROJECT:
     NUM_VIEWS: 10
   ADAPTER:
-    RATIO: 0.7      # 调整adapter比例
-    INIT: 1.2       # 调整初始化值
-    DROPOUT: 0.05   # 减少dropout
+    RATIO: 0.5      # 降低adapter比例，让增强特征发挥更大作用
+    INIT: 0.8       # 调整初始化
+    DROPOUT: 0.1    # 适当增加dropout
+  LIGHTWEIGHT_ADAPTER: false  # 使用完整版本
 
 SEARCH:
   TIME: 4
