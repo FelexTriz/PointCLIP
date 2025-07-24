@@ -11,8 +11,8 @@ OPTIM:
   MOMENTUM: 0.9
   WEIGHT_DECAY: 1e-4
   MAX_EPOCH: 500   # 充足的训练轮数
-  LR_SCHEDULER: 'multistep'
-  STEPSIZE: [150, 250, 350]  # 分阶段降低学习率
+  LR_SCHEDULER: 'multi_step'  # 修改这里：multistep -> multi_step
+  STEPSIZE: [150, 250, 350]   # 分阶段降低学习率
   GAMMA: 0.5
 
 TRAIN:
