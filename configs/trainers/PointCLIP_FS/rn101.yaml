@@ -1,19 +1,15 @@
 DATALOADER:
   TRAIN_X:
-    BATCH_SIZE: 32
+    BATCH_SIZE: 16        # 减小batch size
   TEST:
     BATCH_SIZE: 100
   NUM_WORKERS: 8
 
 OPTIM:
-  NAME: 'adamw'     # 尝试AdamW优化器
-  LR: 0.001         # 降低学习率
-  WEIGHT_DECAY: 0.05
-  MAX_EPOCH: 200    # 适当减少epoch
-  LR_SCHEDULER: 'cosine'
-  WARMUP_EPOCH: 10  # 增加warmup
-  WARMUP_TYPE: 'linear'
-  WARMUP_CONS_LR: 1e-6
+  NAME: 'sgd'      # 使用更稳定的SGD
+  LR: 0.001        # 低学习率
+  MOMENTUM: 0.9
+  WEIGHT_DECAY: 1e-4
 
 TRAIN:
   PRINT_FREQ: 5
@@ -28,10 +24,10 @@ MODEL:
   PROJECT:
     NUM_VIEWS: 10
   ADAPTER:
-    RATIO: 0.5      # 降低adapter比例，让增强特征发挥更大作用
-    INIT: 0.8       # 调整初始化
-    DROPOUT: 0.1    # 适当增加dropout
-  LIGHTWEIGHT_ADAPTER: false  # 使用完整版本
+    RATIO: 0.1     # 非常小的adapter比例
+    INIT: 0.3
+    DROPOUT: 0.5   # 高dropout
+  LIGHTWEIGHT_ADAPTER: false
 
 SEARCH:
   TIME: 4
