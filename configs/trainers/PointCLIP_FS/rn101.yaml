@@ -7,12 +7,12 @@ DATALOADER:
 
 OPTIM:
   NAME: 'sgd'      # 使用更稳定的SGD
-  LR: 0.001        # 低学习率
+  LR: 0.002        # 适当提高学习率
   MOMENTUM: 0.9
   WEIGHT_DECAY: 1e-4
-  MAX_EPOCH: 500   # 充足的训练轮数
+  MAX_EPOCH: 200   # 减少epoch防止过拟合
   LR_SCHEDULER: 'multi_step'  # 修改这里：multistep -> multi_step
-  STEPSIZE: [150, 250, 350]   # 分阶段降低学习率
+  STEPSIZE: [60, 120, 160]  # 调整衰减点
   GAMMA: 0.5
 
 TRAIN:
@@ -28,9 +28,9 @@ MODEL:
   PROJECT:
     NUM_VIEWS: 10
   ADAPTER:
-    RATIO: 0.1     # 非常小的adapter比例
-    INIT: 0.3
-    DROPOUT: 0.5   # 高dropout
+    RATIO: 0.4     # 提高adapter ratio
+    INIT: 0.8      # 提高初始化值
+    DROPOUT: 0.2   # 大幅减少dropout
   LIGHTWEIGHT_ADAPTER: false
 
 SEARCH:
