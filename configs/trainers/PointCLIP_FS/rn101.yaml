@@ -10,9 +10,9 @@ OPTIM:
   LR: 0.002        # 适当提高学习率
   MOMENTUM: 0.9
   WEIGHT_DECAY: 1e-4
-  MAX_EPOCH: 200   # 减少epoch防止过拟合
+  MAX_EPOCH: 500   # 改成500轮
   LR_SCHEDULER: 'multi_step'  # 修改这里：multistep -> multi_step
-  STEPSIZE: [60, 120, 160]  # 调整衰减点
+  STEPSIZE: [150, 300, 400]   # 调整衰减点适应500轮
   GAMMA: 0.5
 
 TRAIN:
