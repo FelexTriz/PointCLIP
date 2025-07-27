@@ -7,13 +7,13 @@ DATALOADER:
 
 OPTIM:
   NAME: 'sgd'      # 使用更稳定的SGD
-  LR: 0.002        # 适当提高学习率
+  LR: 0.005        # 可以稍微提高学习率，因为只优化CoOp
   MOMENTUM: 0.9
   WEIGHT_DECAY: 1e-4
-  MAX_EPOCH: 500   # 改成500轮
-  LR_SCHEDULER: 'multi_step'  # 修改这里：multistep -> multi_step
-  STEPSIZE: [150, 300, 400]   # 调整衰减点适应500轮
-  GAMMA: 0.5
+  MAX_EPOCH: 200   # 减少一些epoch
+  LR_SCHEDULER: 'cosine'
+  WARMUP_EPOCH: 10
+  WARMUP_TYPE: 'linear'
 
 TRAIN:
   PRINT_FREQ: 5
@@ -28,10 +28,10 @@ MODEL:
   PROJECT:
     NUM_VIEWS: 10
   ADAPTER:
-    RATIO: 0.4     # 提高adapter ratio
-    INIT: 0.8      # 提高初始化值
-    DROPOUT: 0.2   # 大幅减少dropout
-  LIGHTWEIGHT_ADAPTER: false
+    RATIO: 0.5     # 调整adapter ratio
+    INIT: 1.0      # 调整初始化值
+    DROPOUT: 0.1   # 较低的dropout
+  LIGHTWEIGHT_ADAPTER: true  # 使用轻量级adapter
 
 SEARCH:
   TIME: 6     # 增加搜索时间

@@ -25,4 +25,4 @@ python train.py \
 --config-file configs/trainers/${TRAINER}/${CFG}.yaml \
 --output-dir output/${TRAINER}/${CFG}/${DATASET} \
 --use-coop ${USE_COOP} \
---post-search  # 取消注释这行
+#--post-search  # 取消注释这行

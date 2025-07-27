@@ -208,17 +208,14 @@ class PointCLIP_Model(nn.Module):
         pc_views = PCViews()
         self.get_img = pc_views.get_img
 
-        # 使用增强的adapter
-        # self.adapter = Adapter(cfg).to(clip_model.dtype)  # 注释掉原来的
-
-        # 选择使用哪个版本
+        # 使用轻量级增强adapter
         use_lightweight = getattr(cfg.MODEL, 'LIGHTWEIGHT_ADAPTER', True)
         if use_lightweight:
             self.adapter = LightweightEnhancedAdapter(cfg).to(clip_model.dtype)
             print("Using Lightweight Enhanced Adapter")
         else:
-            self.adapter = EnhancedAdapter(cfg).to(clip_model.dtype)
-            print("Using Full Enhanced Adapter")
+            self.adapter = Adapter(cfg).to(clip_model.dtype)  # 使用原始adapter
+            print("Using Original Adapter")
 
         # Store features for post-process view-weight search
         self.store = False
@@ -542,12 +539,13 @@ class PointCLIP_FS(TrainerX):
                 if 'adapter' not in name and 'textual_encoder.ctx' not in name:
                     param.requires_grad_(False)
 
-            # 使用单一优化器 - 统一管理所有可训练参数
+            # 只优化adapter和CoOp的ctx参数
             params_to_optimize = []
             params_to_optimize.extend(list(self.model.adapter.parameters()))
             params_to_optimize.extend(list(self.model.textual_encoder.parameters()))
 
             print(f"Total trainable parameters: {sum(p.numel() for p in params_to_optimize)}")
+            print(f"CoOp context parameters: {self.model.textual_encoder.ctx.numel()}")
 
             # 使用统一的优化器
             self.optim = build_optimizer(params_to_optimize, cfg.OPTIM)
