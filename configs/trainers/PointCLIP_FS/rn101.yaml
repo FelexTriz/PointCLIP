@@ -35,4 +35,4 @@ MODEL:
 
 SEARCH:
   TIME: 6     # 增加搜索时间
-  RANGE: 1.5  # 扩大搜索范围
+  RANGE: 2    # 改为整数：1.5 -> 2
