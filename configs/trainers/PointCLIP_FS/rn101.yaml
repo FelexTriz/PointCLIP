@@ -34,5 +34,5 @@ MODEL:
   LIGHTWEIGHT_ADAPTER: false
 
 SEARCH:
-  TIME: 4
-  RANGE: 1
+  TIME: 6     # 增加搜索时间
+  RANGE: 1.5  # 扩大搜索范围
