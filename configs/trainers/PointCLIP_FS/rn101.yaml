@@ -32,6 +32,7 @@ MODEL:
     INIT: 1.0      # 调整初始化值
     DROPOUT: 0.1   # 较低的dropout
   LIGHTWEIGHT_ADAPTER: true  # 使用轻量级adapter
+  COOP_TYPE: 'multi_template'  # 添加这行来选择多模板CoOp
 
 SEARCH:
   TIME: 6     # 增加搜索时间

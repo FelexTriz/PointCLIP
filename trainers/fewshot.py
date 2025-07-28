@@ -1,7 +1,7 @@
+import numpy as np  # 添加这行
 import os.path as osp
 import torch
 import torch.nn as nn
-import numpy as np  # 添加这行
 from dassl.engine import TRAINER_REGISTRY, TrainerX
 from dassl.metrics import compute_accuracy
 from dassl.optim import build_optimizer, build_lr_scheduler
@@ -191,11 +191,22 @@ class PointCLIP_Model(nn.Module):
         
         # Encoders from CLIP
         self.visual_encoder = clip_model.visual
-        # 根据参数选择使用哪种TextEncoder
         self.use_coop = use_coop
+
         if self.use_coop:
-            self.textual_encoder = CoOp_TextEncoder(cfg, classnames, clip_model)
-            print("Using CoOp TextEncoder")
+            # 添加对不同CoOp TextEncoder的支持
+            coop_type = getattr(cfg.MODEL, 'COOP_TYPE', 'basic')
+
+            if coop_type == 'multi_template':
+                self.textual_encoder = MultiTemplateCoOp_TextEncoder(cfg, classnames, clip_model)
+                print("Using Multi-template CoOp TextEncoder")
+            elif coop_type == 'advanced':
+                # 如果你有AdvancedCoOp_TextEncoder的话
+                self.textual_encoder = CoOp_TextEncoder(cfg, classnames, clip_model)  # 暂时用基础版本
+                print("Using Advanced CoOp TextEncoder")
+            else:
+                self.textual_encoder = CoOp_TextEncoder(cfg, classnames, clip_model)
+                print("Using Basic CoOp TextEncoder")
         else:
             self.textual_encoder = Textual_Encoder(cfg, classnames, clip_model)
             print("Using Original TextEncoder")
@@ -303,6 +314,94 @@ class Adapter(nn.Module):
         img_feat = view_feat * self.adapter_ratio + res_feat * (1 - self.adapter_ratio)
 
         return img_feat
+
+
+class MultiTemplateCoOp_TextEncoder(nn.Module):
+    def __init__(self, cfg, classnames, clip_model):
+        super().__init__()
+        self.cfg = cfg
+        self.classnames = classnames
+        self.clip_model = clip_model
+        self.dtype = clip_model.dtype
+
+        self.n_cls = len(classnames)
+        self.n_ctx = 6
+
+        # 多个模板
+        self.templates = [
+            "X X X X X X {}.",
+            "a X X X X X X {}.",
+            "the X X X X X X {}.",
+            "point cloud of X X X X X X {}.",
+            "3D model of X X X X X X {}.",
+            "depth map of X X X X X X {}."
+        ]
+
+        # 为每个模板学习不同的context
+        ctx_dim = clip_model.ln_final.weight.shape[0]
+        self.ctx_vectors = nn.Parameter(torch.randn(len(self.templates), self.n_ctx, ctx_dim))
+
+        # 模板权重
+        self.template_weights = nn.Parameter(torch.ones(len(self.templates)))
+
+        # 自适应融合网络
+        self.fusion_net = nn.Sequential(
+            nn.Linear(ctx_dim * len(self.templates), ctx_dim),
+            nn.ReLU(),
+            nn.Linear(ctx_dim, ctx_dim)
+        )
+
+        print(f"Multi-template CoOp with {len(self.templates)} templates")
+
+    def forward(self):
+        all_class_features = []
+
+        for classname in self.classnames:
+            template_features = []
+
+            for t_idx, template in enumerate(self.templates):
+                # 构建当前模板的prompt
+                prompt_text = template.format(classname.replace('_', ' '))
+                tokenized_prompt = clip.tokenize(prompt_text).cuda()
+
+                with torch.no_grad():
+                    embedding = self.clip_model.token_embedding(tokenized_prompt).type(self.dtype)
+
+                # 找到X tokens的位置并替换
+                tokens = prompt_text.split()
+                x_positions = [i for i, token in enumerate(tokens) if token == 'X']
+
+                for i, pos in enumerate(x_positions):
+                    if i < self.n_ctx:
+                        embedding[0, pos + 1, :] = self.ctx_vectors[t_idx, i, :]
+
+                # 编码
+                x = embedding.permute(1, 0, 2)
+                x = self.clip_model.transformer(x)
+                x = x.permute(1, 0, 2)
+                x = self.clip_model.ln_final(x).type(self.dtype)
+
+                eot_token = tokenized_prompt.argmax(dim=-1)
+                text_feature = x[0, eot_token] @ self.clip_model.text_projection
+                template_features.append(text_feature)
+
+            # 加权融合多个模板
+            template_features = torch.stack(template_features)
+            weights = F.softmax(self.template_weights, dim=0)
+
+            # 简单加权平均
+            fused_feature = (template_features * weights.unsqueeze(1)).sum(0)
+
+            # 或者使用融合网络
+            # concat_features = torch.cat(template_features, dim=0)
+            # fused_feature = self.fusion_net(concat_features)
+
+            all_class_features.append(fused_feature)
+
+        text_features = torch.stack(all_class_features)
+        text_features = text_features.repeat(1, self.cfg.MODEL.PROJECT.NUM_VIEWS)
+
+        return text_features
 
 
 class EnhancedAdapter(nn.Module):
