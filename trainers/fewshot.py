@@ -635,16 +635,22 @@ class PointCLIP_FS(TrainerX):
         if use_coop:
             print('Turning off gradients in visual encoder')
             for name, param in self.model.named_parameters():
-                if 'adapter' not in name and 'textual_encoder.ctx' not in name:
+                if 'adapter' not in name and 'textual_encoder.ctx' not in name and 'textual_encoder.ctx_vectors' not in name:
                     param.requires_grad_(False)
 
-            # 只优化adapter和CoOp的ctx参数
+            # 只优化adapter和CoOp的参数
             params_to_optimize = []
             params_to_optimize.extend(list(self.model.adapter.parameters()))
             params_to_optimize.extend(list(self.model.textual_encoder.parameters()))
 
             print(f"Total trainable parameters: {sum(p.numel() for p in params_to_optimize)}")
-            print(f"CoOp context parameters: {self.model.textual_encoder.ctx.numel()}")
+
+            # 根据不同的CoOp类型打印context参数信息
+            if hasattr(self.model.textual_encoder, 'ctx'):
+                print(f"CoOp context parameters: {self.model.textual_encoder.ctx.numel()}")
+            elif hasattr(self.model.textual_encoder, 'ctx_vectors'):
+                print(f"Multi-template CoOp context parameters: {self.model.textual_encoder.ctx_vectors.numel()}")
+                print(f"Template weights: {self.model.textual_encoder.template_weights.numel()}")
 
             # 使用统一的优化器
             self.optim = build_optimizer(params_to_optimize, cfg.OPTIM)
