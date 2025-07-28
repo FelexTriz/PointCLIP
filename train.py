@@ -60,6 +60,9 @@ def extend_cfg(cfg):
     # 添加 LIGHTWEIGHT_ADAPTER 配置项
     cfg.MODEL.LIGHTWEIGHT_ADAPTER = True
 
+    # 添加 COOP_TYPE 配置项
+    cfg.MODEL.COOP_TYPE = 'basic'  # 默认值
+
 
 def setup_cfg(args):
     cfg = get_cfg_default()
